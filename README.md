@@ -1,5 +1,7 @@
 # agentenv-vfs
 
+[![tests](https://github.com/earakely-scale/agentenv-vfs/actions/workflows/test.yml/badge.svg)](https://github.com/earakely-scale/agentenv-vfs/actions/workflows/test.yml)
+
 An [agent-env](https://pypi.org/project/agentenv-framework/) plugin that gives an agent any env's tools through
 [agentvfs](https://github.com/agentvfs/vfs-bench): a shell in a [Mirage](https://github.com/strukto-ai/mirage)
 workspace, where each of the env's MCP tools is a command of the same name, instead of MCP tool calls.
@@ -17,7 +19,8 @@ tasks' other steps or agent-env itself.
 ## Install
 
 ```bash
-uv tool install --python 3.12 'agentenv-framework>=0.9.1637' --with agentenv-vfs
+uv tool install --python 3.12 'agentenv-framework>=0.9.1637' \
+  --with 'agentenv-vfs @ git+https://github.com/earakely-scale/agentenv-vfs'
 agent-env vfs --help
 ```
 

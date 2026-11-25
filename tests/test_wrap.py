@@ -69,6 +69,21 @@ def test_role_locks_and_order():
     assert next(s for s in steps if s["id"] == "prompt")["system_prompt"].startswith("Use send_message.\n\n")
 
 
+def test_several_envs():
+    steps = with_role_and_locks()
+    steps.insert(1, {"id": "deploy-crm", "type": "deploy_env", "env_id": "crm", "ttl_seconds": 900, "depends_on": []})
+    steps.append({"id": "crm-lock", "type": "modify_env_tool_access", "env_id": "crm", "role": "pat@example.com",
+                  "action": "disable", "tools": ["wipe"], "depends_on": [{"task_step_id": "deploy-crm"}]})
+    next(s for s in steps if s["id"] == "deploy-solver")["env_ids"] = ["world", "crm"]
+    change = wrap_steps(steps)
+    front = next(s for s in steps if s.get("env_id") == ENV_NAME)
+    assert front["env_params"] == {"env": ["world", "crm"], "role": "pat@example.com"} and change["env"] == ["world", "crm"]
+    assert set(deps(front)) == {"deploy-env", "deploy-crm", "reset", "solver-lock", "crm-lock"}
+    assert front["ttl_seconds"] == 900
+    position = {i: n for n, i in enumerate(ids(steps))}
+    assert all(position[d] < position[front["id"]] for d in deps(front))
+
+
 def test_call_log_step():
     steps = with_role_and_locks()
     wrap_steps(steps)

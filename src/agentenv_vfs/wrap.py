@@ -1,7 +1,7 @@
 """Give a bundle's agent the agentvfs interface: its env's tools as shell commands, in place of MCP tools.
 
 For each task, the agent (the one its prompt_agent steps prompt, or ``agent``) gets an agentvfs env in front of its
-one env: a deploy_env of ``agentvfs`` that waits for the env and for every tool lock on the agent's role, then the
+envs: a deploy_env of ``agentvfs`` that waits for them and for every tool lock on the agent's role, then the
 agent's ``env_ids`` become that env and, where the agent it runs as can have them turned off, its built-in tools go off. After the agent's prompts, a run_code step copies
 the env's log of the agent's shell lines and tool calls into the run's record (``script_results.agentvfs_calls``).
 Every other step is kept as it is.
@@ -87,24 +87,27 @@ def wrap_steps(steps: list[dict], agent: Optional[str] = None, keep_builtins: bo
         raise WrapError(f"{len(deploys)} deploy_agent steps deploy '{agent or 'the default agent'}'")
     deploy = deploys[0]
     env_ids = deploy.get("env_ids") or []
-    if len(env_ids) != 1:
-        raise WrapError(f"'{agent or 'the default agent'}' has env_ids {env_ids}; agentvfs fronts one env")
-    target = env_ids[0]
-    if target == ENV_NAME:
+    if not env_ids:
+        raise WrapError(f"'{agent or 'the default agent'}' has no env_ids")
+    if ENV_NAME in env_ids:
         raise WrapError(f"'{agent or 'the default agent'}' already works through agentvfs")
-    env_deploys = [s for s in steps if s.get("type") == "deploy_env" and s.get("env_id") == target]
-    if len(env_deploys) != 1:
-        raise WrapError(f"{len(env_deploys)} deploy_env steps deploy '{target}'")
+    env_deploys = []
+    for target in env_ids:
+        found = [s for s in steps if s.get("type") == "deploy_env" and s.get("env_id") == target]
+        if len(found) != 1:
+            raise WrapError(f"{len(found)} deploy_env steps deploy '{target}'")
+        env_deploys.append(found[0])
     role = deploy.get("role")
     # Its tool list is read as the agent's role once the role's tool locks are in.
-    locks = [s["id"] for s in steps if s.get("type") == "modify_env_tool_access" and s.get("env_id") == target
+    locks = [s["id"] for s in steps if s.get("type") == "modify_env_tool_access" and s.get("env_id") in env_ids
              and s.get("role") in (role, "*")]
     front = {"id": f"{deploy['id']}-agentvfs", "type": "deploy_env", "version": None, "fail_task_on_error": True,
-             "depends_on": [{"task_step_id": i} for i in [env_deploys[0]["id"], *locks]], "env_id": ENV_NAME,
-             "env_version": None, "ttl_seconds": env_deploys[0].get("ttl_seconds") or 10800, "cpu": 1.0,
-             "memory_mb": 2048, "metadata": {},
-             "env_params": {"env": target, **({"role": role} if role else {})}}
-    steps.insert(steps.index(env_deploys[0]) + 1, front)
+             "depends_on": [{"task_step_id": s["id"]} for s in env_deploys] + [{"task_step_id": i} for i in locks],
+             "env_id": ENV_NAME, "env_version": None,
+             "ttl_seconds": max(s.get("ttl_seconds") or 10800 for s in env_deploys), "cpu": 1.0, "memory_mb": 2048,
+             "metadata": {},
+             "env_params": {"env": env_ids[0] if len(env_ids) == 1 else list(env_ids), **({"role": role} if role else {})}}
+    steps.insert(steps.index(env_deploys[-1]) + 1, front)
     deploy["env_ids"] = [ENV_NAME]
     deploy["depends_on"] = [*(deploy.get("depends_on") or []), _dep(deploy, front["id"])]
     harness = runs_as(deploy, for_agent)
@@ -130,7 +133,8 @@ def wrap_steps(steps: list[dict], agent: Optional[str] = None, keep_builtins: bo
                       "entrypoint": "run", "args": {}, "result_id": "agentvfs_calls", "timeout_seconds": 300,
                       "env_id": ENV_NAME, "agent_name": None, "sandbox_name": None})
     steps[:] = _ordered(steps)
-    return {"agent": agent, "runs_as": harness, "env": target, "role": role, "builtin_tools": builtins,
+    return {"agent": agent, "runs_as": harness, "env": env_ids[0] if len(env_ids) == 1 else env_ids, "role": role,
+            "builtin_tools": builtins,
             "waits_for_locks": locks, "prompts_noted": noted}
 
 

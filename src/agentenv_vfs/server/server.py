@@ -4,8 +4,10 @@ The agent's one tool is ``shell``. In its workspace each tool of the fronted env
 parameters flags of the same names, and a command's call goes to the fronted env's MCP endpoint as the role of the agent
 that ran it, so the fronted env sees the same tool calls an MCP agent of that role would make.
 
-``data/add`` (a DataPart) names the fronted env: ``{"mcp_url", "role"?, "headers"?}``. With a ``role``, that role's
-workspace opens now and the ``shell`` tool's description lists its commands; any other role's opens at its first call.
+``data/add`` (a DataPart) names the fronted envs, ``{"envs": [{"name", "mcp_url"}, ...], "role"?, "headers"?}`` (or one,
+``{"mcp_url", ...}``). The workspace serves the tools of all of them, each call going to the env that serves its tool,
+and refuses two envs that serve a tool of the same name. With a ``role``, that role's workspace opens now and the
+``shell`` tool's description lists its commands; any other role's opens at its first call.
 
 Every shell line, and every tool call a line makes, is kept in order: ``data/get`` of ``calls.jsonl`` returns them.
 """
@@ -71,9 +73,10 @@ class RoleSession:
 
 
 class Fronted:
-    """The fronted env's MCP endpoint, one client session per role."""
+    """A fronted env's MCP endpoint, one client session per role."""
 
-    def __init__(self, mcp_url: str, headers: dict[str, str] | None = None) -> None:
+    def __init__(self, name: str, mcp_url: str, headers: dict[str, str] | None = None) -> None:
+        self.name = name
         self.mcp_url = mcp_url
         self.headers = headers or {}
         self.sessions: dict[str, RoleSession] = {}
@@ -106,6 +109,35 @@ class Fronted:
         await asyncio.gather(*(s.close() for s in sessions.values()))
 
 
+class Fronts:
+    """The fronted envs, and for each role which env serves each of its tools."""
+
+    def __init__(self, envs: list[Fronted]) -> None:
+        self.envs = envs
+        self.routes: dict[str, dict[str, Fronted]] = {}
+
+    async def tools(self, role: str) -> list[dict]:
+        tools, route = [], {}
+        for env in self.envs:
+            for t in await env.tools(role):
+                if t["name"] in route:
+                    raise RuntimeError(f"envs '{route[t['name']].name}' and '{env.name}' both serve a tool named "
+                                       f"'{t['name']}'; a workspace has one command per name")
+                route[t["name"]] = env
+                tools.append(t)
+        self.routes[role] = route
+        return tools
+
+    async def call(self, role: str, name: str, arguments: dict) -> tuple[str | None, dict]:
+        env = self.routes.get(role, {}).get(name)
+        if env is None:
+            return None, {"ok": False, "error": f"no fronted env serves '{name}' for role '{role}'"}
+        return env.name, await env.call(role, name, arguments)
+
+    async def close(self) -> None:
+        await asyncio.gather(*(env.close() for env in self.envs))
+
+
 class CallLog:
     """Every shell line and every tool call a line made, in order: what a run keeps of the agent's tool use."""
 
@@ -125,8 +157,8 @@ class CallLog:
         row.update(exit_code=done.get("exit_code"), ms=round(ms), stdout_chars=len(done.get("stdout") or ""),
                    stderr_chars=len(done.get("stderr") or ""))
 
-    def call(self, role: str, tool: str, arguments: dict, reply: dict, ms: float) -> None:
-        row = {"kind": "call", "line": self.current.get(role), "at": _now(), "role": role, "tool": tool,
+    def call(self, role: str, env: str | None, tool: str, arguments: dict, reply: dict, ms: float) -> None:
+        row = {"kind": "call", "line": self.current.get(role), "at": _now(), "role": role, "env": env, "tool": tool,
                "arguments": _clip(arguments), "ok": reply.get("ok"), "ms": round(ms),
                "result_chars": len(reply.get("result") or "")}
         if not reply.get("ok"):
@@ -155,8 +187,8 @@ def _clip(value):
 class Bridge:
     """A loopback HTTP endpoint the workspace's commands post their calls to: ``POST /call {role, tool, arguments}``."""
 
-    def __init__(self, fronted: Fronted, log: CallLog) -> None:
-        self.fronted = fronted
+    def __init__(self, fronts: Fronts, log: CallLog) -> None:
+        self.fronts = fronts
         self.log = log
         self.server: asyncio.base_events.Server | None = None
         self.url = ""
@@ -172,8 +204,8 @@ class Bridge:
                            if line.lower().startswith(b"content-length:")), 0)
             body = json.loads(await reader.readexactly(length)) if length else {}
             role, args, started = body.get("role") or DEFAULT_ROLE, body.get("arguments") or {}, time.monotonic()
-            reply = await self.fronted.call(role, body["tool"], args)
-            self.log.call(role, body["tool"], args, reply, (time.monotonic() - started) * 1000)
+            env, reply = await self.fronts.call(role, body["tool"], args)
+            self.log.call(role, env, body["tool"], args, reply, (time.monotonic() - started) * 1000)
         except Exception as e:
             reply = {"ok": False, "error": f"{type(e).__name__}: {e}"}
         data = json.dumps(reply).encode()
@@ -293,9 +325,11 @@ async def _clock(mcp_url: str) -> str | None:
 
 def _config_of(parts: list) -> dict:
     for part in parts:
-        if isinstance(part, DataPart) and "mcp_url" in part.data:
+        if isinstance(part, DataPart) and "envs" in part.data:
             return part.data
-    raise ValueError('data/add needs a DataPart {"mcp_url", "role"?, "headers"?}')
+        if isinstance(part, DataPart) and "mcp_url" in part.data:
+            return {**part.data, "envs": [{"name": "env", "mcp_url": part.data["mcp_url"]}]}
+    raise ValueError('data/add needs a DataPart {"envs": [{"name", "mcp_url"}, ...], "role"?, "headers"?}')
 
 
 @environment_card(name="agentvfs")
@@ -303,7 +337,7 @@ class AgentVfs(AgentEnvEnvironment):
     """Another env's MCP tools as commands in a Mirage shell workspace; the agent's one tool is ``shell``."""
 
     def __init__(self) -> None:
-        self.fronted: Fronted | None = None
+        self.fronts: Fronts | None = None
         self.bridge: Bridge | None = None
         self.clock: str | None = None
         self.workspaces: dict[str, Workspace] = {}
@@ -313,9 +347,9 @@ class AgentVfs(AgentEnvEnvironment):
     async def _workspace(self, role: str) -> Workspace:
         async with self.opening:
             if role not in self.workspaces:
-                if self.fronted is None:
+                if self.fronts is None:
                     raise RuntimeError("no env is fronted yet (data/add names one)")
-                workspace = Workspace(role, await self.fronted.tools(role), self.bridge.url, self.clock)
+                workspace = Workspace(role, await self.fronts.tools(role), self.bridge.url, self.clock)
                 try:
                     await workspace.open()
                 except BaseException:
@@ -329,20 +363,24 @@ class AgentVfs(AgentEnvEnvironment):
         workspaces, self.workspaces = self.workspaces, {}
         for workspace in workspaces.values():
             await workspace.close()
-        for part in (self.bridge, self.fronted):
+        for part in (self.bridge, self.fronts):
             if part is not None:
                 await part.stop() if isinstance(part, Bridge) else await part.close()
-        self.bridge = self.fronted = None
+        self.bridge = self.fronts = None
 
     @add_data
     async def _add(self, parts: list) -> None:
         await self._reset()
         config = _config_of(parts)
-        self.fronted = Fronted(config["mcp_url"], config.get("headers"))
+        self.fronts = Fronts([Fronted(e["name"], e["mcp_url"], config.get("headers")) for e in config["envs"]])
         self.log = CallLog()
-        self.bridge = Bridge(self.fronted, self.log)
+        self.bridge = Bridge(self.fronts, self.log)
         await self.bridge.start()
-        self.clock = await _clock(config["mcp_url"])
+        self.clock = None
+        for e in config["envs"]:  # the first fronted env that keeps a virtual time
+            if clock := await _clock(e["mcp_url"]):
+                self.clock = clock
+                break
         if role := config.get("role"):
             workspace = await self._workspace(role)
             await self.update_tool("shell", description=f"{SHELL_DOC}\n\n{listing(workspace.tools)}")
@@ -353,7 +391,8 @@ class AgentVfs(AgentEnvEnvironment):
             return [FilePart(file=FileWithBytes(bytes=base64.b64encode(self.log.jsonl()).decode()),
                              metadata={DATA_OBJECTS_EXTENSION_URI: {"path": CALLS}}) for p in paths if p == CALLS]
         calls = [r for r in self.log.rows if r["kind"] == "call"]
-        return [DataPart(data={"fronted": self.fronted.mcp_url if self.fronted else None,
+        return [DataPart(data={"fronted": [{"name": e.name, "mcp_url": e.mcp_url} for e in self.fronts.envs]
+                               if self.fronts else [],
                                "roles": {r: [t["name"] for t in w.tools] for r, w in self.workspaces.items()},
                                "lines": len(self.log.rows) - len(calls), "calls": len(calls),
                                "failed_calls": sum(not r["ok"] for r in calls)})]

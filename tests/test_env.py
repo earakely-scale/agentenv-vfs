@@ -19,3 +19,4 @@ def test_refusals():
     env = AgentVfsEnv.__new__(AgentVfsEnv)
     assert "env_params" in env.deploy_refusal(env_params=None)
     assert "not other" in env.deploy_refusal(env_params={"env": "x", "other": 1})
+    assert "env_params" in env.deploy_refusal(env_params={"env": []})

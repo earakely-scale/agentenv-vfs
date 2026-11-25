@@ -33,10 +33,10 @@ agent-env vfs wrap my-bundle --out my-bundle-vfs
 agent-env run my-bundle-vfs
 ```
 
-`wrap` copies the bundle and, in each task, puts an `agentvfs` env in front of the agent's env:
+`wrap` copies the bundle and, in each task, puts an `agentvfs` env in front of the agent's envs:
 
-- a `deploy_env` of `agentvfs` names the env it fronts (`env_params.env`) and the agent's role, and waits for that env
-  and for every tool lock on the role;
+- a `deploy_env` of `agentvfs` names the envs it fronts (`env_params.env`, one id or a list) and the agent's role, and
+  waits for those envs and for every tool lock on the role;
 - the agent's `env_ids` become `["agentvfs"]`, and its built-in tools go off (`builtin_tools: {"disable": "*"}`);
 - the agent's system prompt gains one paragraph on working through commands (`--no-note` leaves it as it is).
 
@@ -75,7 +75,9 @@ It works with any agent-env agent: agentvfs is an env, and the agent reaches it 
   `<command> --help` shows one, and `/workspace` and `/tmp` are its own. `python3` is CPython in Pyodide, inside the
   workspace: its standard library, the workspace's files and commands, no network. `curl` and `wget` are refused: the
   env is reached through its commands.
-- **Commands are the env's tools.** Each tool is a command named as the tool is, each parameter a flag of the same name
+- **Commands are the envs' tools.** One workspace serves the tools of every env it fronts, each call going to the env
+  that serves its tool; two envs that serve a tool of the same name are refused. Each tool is a command named as the
+  tool is, each parameter a flag of the same name
   (`--channel_id`, or `--channel-id`); a list or an object is one JSON value. The `shell` tool's description lists every
   command for the role named at deploy, so the agent sees them up front, as it would see MCP tools.
 - **Calls go to the env as the agent.** A command's call goes to the fronted env's MCP endpoint with the agent's
@@ -91,7 +93,6 @@ It works with any agent-env agent: agentvfs is an env, and the agent reaches it 
 
 ## Not covered yet
 
-- An agent with more than one env (`wrap` fronts one).
 - Python packages beyond the standard library (Pyodide fetches them from the network, which the workspace refuses).
 - Mounting an env's data as files: reads are commands, as writes are.
 - Waiting for the world: a shell-only agent waits with `sleep`.

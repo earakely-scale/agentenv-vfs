@@ -1,10 +1,11 @@
 """The ``agentvfs`` env type: an MCP server env (its server in ``server/``) that fronts another env of the same run.
 
-A deploy_env names the env it fronts, and optionally the role whose workspace opens at once:
+A deploy_env names the env it fronts (or a list of them), and optionally the role whose workspace opens at once:
 
     {"type": "deploy_env", "env_id": "agentvfs", "env_params": {"env": "notes", "role": "alice"}}
+    {"type": "deploy_env", "env_id": "agentvfs", "env_params": {"env": ["notes", "crm"]}}
 
-Once deployed, it is handed the fronted env's MCP endpoint, as its own sandbox reaches it, over ``data/add``.
+Once deployed, it is handed each fronted env's MCP endpoint, as its own sandbox reaches it, over ``data/add``.
 """
 from __future__ import annotations
 
@@ -27,22 +28,26 @@ class AgentVfsEnv(MCPServerEnv):
 
     def deploy_refusal(self, *, sandbox_type: Optional[str] = None, env_params: Optional[dict] = None,
                        **options) -> Optional[str]:
-        if not isinstance(env_params, dict) or not isinstance(env_params.get("env"), str):
-            return 'agentvfs envs take env_params {"env": <the env id it fronts>, "role"?, "headers"?}'
+        names = env_params.get("env") if isinstance(env_params, dict) else None
+        if not (isinstance(names, str) or (isinstance(names, list) and names and all(isinstance(n, str) for n in names))):
+            return 'agentvfs envs take env_params {"env": <the env id it fronts, or a list of them>, "role"?, "headers"?}'
         if unknown := sorted(set(env_params) - set(PARAMS)):
             return f"agentvfs env_params take {', '.join(PARAMS)}, not {', '.join(unknown)}"
         return super().deploy_refusal(sandbox_type=sandbox_type, **options)
 
     async def run_env_params(self, env_params: Optional[dict], deployed_envs: list[DeployedEnv]) -> Optional[dict]:
-        """The fronted env's deployment, found among the run's by its id (a bundle's ids end in ``/<name>``)."""
-        name = env_params["env"]
-        found = [d for d in deployed_envs if d.env_id == name or d.env_id.endswith(f"/{name}")]
-        if len(found) != 1:
-            raise ValueError(f"agentvfs: {len(found)} deployed envs match '{name}'; deploy it first, once")
-        target = found[0]
-        if not target.mcp_url:
-            raise ValueError(f"agentvfs: env '{name}' serves no MCP endpoint")
-        return {**env_params, "mcp_url": target.mcp_url, "sandbox_type": getattr(target, "sandbox_type", None)}
+        """Each fronted env's deployment, found among the run's by its id (a bundle's ids end in ``/<name>``)."""
+        names = env_params["env"] if isinstance(env_params["env"], list) else [env_params["env"]]
+        fronted = []
+        for name in names:
+            found = [d for d in deployed_envs if d.env_id == name or d.env_id.endswith(f"/{name}")]
+            if len(found) != 1:
+                raise ValueError(f"agentvfs: {len(found)} deployed envs match '{name}'; deploy it first, once")
+            if not found[0].mcp_url:
+                raise ValueError(f"agentvfs: env '{name}' serves no MCP endpoint")
+            fronted.append({"name": name, "mcp_url": found[0].mcp_url,
+                            "sandbox_type": getattr(found[0], "sandbox_type", None)})
+        return {**env_params, "fronted": fronted}
 
     # MCPServerEnv.deploy's own signature, whose defaults deploy_env reads, plus env_params.
     async def deploy(self, ttl_seconds: int = 10800, disk_size_gb: float = 10,
@@ -57,10 +62,11 @@ class AgentVfsEnv(MCPServerEnv):
             env_state_instance_id=env_state_instance_id, artifact_id=artifact_id, artifact_version=artifact_version,
             attribution=attribution)
         if env_params:
-            # The fronted env's MCP endpoint as this env's sandbox reaches it.
-            url = reachable_url(env_params["mcp_url"], from_sandbox_type=env_params["sandbox_type"],
-                                to_sandbox_type=getattr(deployed, "sandbox_type", None))
-            data = {"mcp_url": url, **{k: env_params[k] for k in ("role", "headers") if env_params.get(k)}}
+            # Each fronted env's MCP endpoint as this env's sandbox reaches it.
+            envs = [{"name": f["name"], "mcp_url": reachable_url(f["mcp_url"], from_sandbox_type=f["sandbox_type"],
+                                                                 to_sandbox_type=getattr(deployed, "sandbox_type", None))}
+                    for f in env_params["fronted"]]
+            data = {"envs": envs, **{k: env_params[k] for k in ("role", "headers") if env_params.get(k)}}
             await protocol.add_data(deployed.environment_url, [DataPart(data=data)], timeout=600,
                                     headers=deployed.control_headers)
         return deployed

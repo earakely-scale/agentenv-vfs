@@ -1,19 +1,24 @@
-"""Give a bundle's agent the agentvfs interface: its env's tools as shell commands, in place of MCP tools.
+"""Give agents of a bundle the agentvfs interface: their envs' tools as shell commands, in place of MCP tools.
 
-For each task, the agent (the one its prompt_agent steps prompt, or ``agent``) gets an agentvfs env in front of its
-envs: a deploy_env of ``agentvfs`` that waits for them and for every tool lock on the agent's role, then the
-agent's ``env_ids`` become that env and, where the agent it runs as can have them turned off, its built-in tools go off. After the agent's prompts, a run_code step copies
-the env's log of the agent's shell lines and tool calls into the run's record (``script_results.agentvfs_calls``).
-Every other step is kept as it is.
+In each task, every agent wrapped (by default the one its prompt_agent steps prompt) gets its own agentvfs env in front
+of its envs: a deploy_env that waits for those envs, for every tool lock on the agent's role and for whatever the
+agent's own deploy waits for. The agent's ``env_ids`` become that env and, where the agent it runs as can have them
+turned off, its built-in tools go off. After the steps that drive the agent (its prompts, or the verifiers it judges
+for), or at the end of the run for an agent no step drives, a run_code step copies the env's log of the agent's shell
+lines and tool calls into the run's record. Every other step is kept as it is.
+
+With one agent wrapped, its env is ``agentvfs`` and its log ``script_results.agentvfs_calls``; with several, each
+agent's env is ``agentvfs-<agent>`` and its log ``script_results.agentvfs_calls_<agent>``.
 """
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from importlib.metadata import version
 from importlib.resources import files
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 ENV_NAME = "agentvfs"
 CALLS_ARTIFACT = "agentvfs-calls"
@@ -41,18 +46,18 @@ class WrapError(ValueError):
     pass
 
 
-def add_env(bundle: Path, build: bool = False) -> Path:
-    """Write envs/agentvfs (the server's build context and env.toml) into ``bundle`` and require the plugin."""
-    env = bundle / "envs" / ENV_NAME
+def add_env(bundle: Path, build: bool = False, name: str = ENV_NAME) -> Path:
+    """Write envs/<name> (the server's build context and env.toml) into ``bundle`` and require the plugin."""
+    env = bundle / "envs" / name
     env.mkdir(parents=True, exist_ok=True)
     source = files("agentenv_vfs") / "server"
-    for name in SERVER_FILES:
-        (env / name).write_bytes((source / name).read_bytes())
+    for f in SERVER_FILES:
+        (env / f).write_bytes((source / f).read_bytes())
     (env / "env.toml").write_text(env_toml(build))
     calls = bundle / "artifacts" / CALLS_ARTIFACT
     calls.mkdir(parents=True, exist_ok=True)
-    for name in ("artifact.toml", "calls.py"):
-        (calls / name).write_bytes((files("agentenv_vfs") / "calls" / name).read_bytes())
+    for f in ("artifact.toml", "calls.py"):
+        (calls / f).write_bytes((files("agentenv_vfs") / "calls" / f).read_bytes())
     toml = bundle / "bundle.toml"
     text = toml.read_text() if toml.exists() else ""
     if "agentenv-vfs" not in text:
@@ -74,23 +79,62 @@ def runs_as(deploy: dict, for_agent: Optional[str] = None) -> str:
     return agent_id.rstrip("/").rsplit("/", 1)[-1]
 
 
-def wrap_steps(steps: list[dict], agent: Optional[str] = None, keep_builtins: bool = False, note: bool = True,
-               call_log: bool = True, for_agent: Optional[str] = None) -> dict:
-    """Edit one task's steps in place; return what changed."""
-    prompted = {s.get("agent_name") for s in steps if s.get("type") == "prompt_agent"}
-    if agent is None:
+def wrap_steps(steps: list[dict], agents: Optional[Sequence[Optional[str]]] = None, keep_builtins: bool = False,
+               note: bool = True, call_log: bool = True, for_agent: Optional[str] = None) -> list[dict]:
+    """Edit one task's steps in place, putting agentvfs in front of each of ``agents`` (by agent_name; default: the
+    agent its prompt_agent steps prompt); return what changed, one entry per agent."""
+    if not agents:
+        prompted = {s.get("agent_name") for s in steps if s.get("type") == "prompt_agent"}
         if len(prompted) != 1:
-            raise WrapError(f"prompt_agent steps prompt {sorted(map(str, prompted))}; name the agent to wrap (--agent)")
-        agent = prompted.pop()  # None: the run's default agent, which its steps leave unnamed
+            raise WrapError(f"prompt_agent steps prompt {sorted(map(str, prompted))}; name the agents to wrap (--agent)")
+        agents = [prompted.pop()]  # None: the run's default agent, which its steps leave unnamed
+    if len(set(agents)) != len(agents):
+        raise WrapError(f"an agent is named twice: {list(agents)}")
+    several = len(agents) > 1
+    changes = [_wrap_agent(steps, agent, several, keep_builtins, note, call_log, for_agent) for agent in agents]
+    steps[:] = _ordered(steps)
+    return changes
+
+
+def wrap_bundle(src: Path, out: Path, agents: Optional[Sequence[str]] = None, keep_builtins: bool = False,
+                note: bool = True, call_log: bool = True, build: bool = False,
+                for_agent: Optional[str] = None) -> list[dict]:
+    """Copy ``src`` to ``out`` with the named agents (default: the one each task prompts) working through agentvfs."""
+    if out.exists():
+        raise WrapError(f"{out} exists")
+    tasks = sorted((src / "tasks").glob("*.json"))
+    if not tasks:
+        raise WrapError(f"{src} has no tasks/*.json")
+    shutil.copytree(src, out)
+    changes = []
+    for path in sorted((out / "tasks").glob("*.json")):
+        doc = json.loads(path.read_text())
+        steps = doc if isinstance(doc, list) else doc["steps"]
+        changes += [{"task": path.name, **c} for c in wrap_steps(steps, agents, keep_builtins, note, call_log, for_agent)]
+        path.write_text(json.dumps(doc, indent=2) + "\n")
+    for name in sorted({c["vfs_env"] for c in changes}):
+        add_env(out, build, name)
+    return changes
+
+
+def _wrap_agent(steps: list[dict], agent: Optional[str], several: bool, keep_builtins: bool, note: bool,
+                call_log: bool, for_agent: Optional[str]) -> dict:
+    """Put an agentvfs env in front of one agent's envs; return what changed."""
+    who = f"'{agent}'" if agent else "the default agent"
     deploys = [s for s in steps if s.get("type") == "deploy_agent" and s.get("agent_name") == agent]
     if len(deploys) != 1:
-        raise WrapError(f"{len(deploys)} deploy_agent steps deploy '{agent or 'the default agent'}'")
+        raise WrapError(f"{len(deploys)} deploy_agent steps deploy {who}")
     deploy = deploys[0]
     env_ids = deploy.get("env_ids") or []
     if not env_ids:
-        raise WrapError(f"'{agent or 'the default agent'}' has no env_ids")
-    if ENV_NAME in env_ids:
-        raise WrapError(f"'{agent or 'the default agent'}' already works through agentvfs")
+        raise WrapError(f"{who} has no env_ids")
+    if any(e == ENV_NAME or e.startswith(f"{ENV_NAME}-") for e in env_ids):
+        raise WrapError(f"{who} already works through agentvfs")
+    if deploy.get("env_step_id"):
+        raise WrapError(f"{who} picks its env's deployment by env_step_id, which agentvfs can't front")
+    env = f"{ENV_NAME}-{agent or 'default'}" if several else ENV_NAME
+    if any(s.get("type") == "deploy_env" and s.get("env_id") == env for s in steps):
+        raise WrapError(f"the task already deploys env '{env}'")
     env_deploys = []
     for target in env_ids:
         found = [s for s in steps if s.get("type") == "deploy_env" and s.get("env_id") == target]
@@ -98,17 +142,18 @@ def wrap_steps(steps: list[dict], agent: Optional[str] = None, keep_builtins: bo
             raise WrapError(f"{len(found)} deploy_env steps deploy '{target}'")
         env_deploys.append(found[0])
     role = deploy.get("role")
-    # Its tool list is read as the agent's role once the role's tool locks are in.
+    # Its tool list is read as the agent's role once the role's tool locks are in, when the agent itself would deploy.
     locks = [s["id"] for s in steps if s.get("type") == "modify_env_tool_access" and s.get("env_id") in env_ids
              and s.get("role") in (role, "*")]
+    waits = list(dict.fromkeys([s["id"] for s in env_deploys] + locks + [_dep_id(d) for d in deploy.get("depends_on") or []]))
     front = {"id": f"{deploy['id']}-agentvfs", "type": "deploy_env", "version": None, "fail_task_on_error": True,
-             "depends_on": [{"task_step_id": s["id"]} for s in env_deploys] + [{"task_step_id": i} for i in locks],
-             "env_id": ENV_NAME, "env_version": None,
+             "depends_on": [{"task_step_id": i} for i in waits],
+             "env_id": env, "env_version": None,
              "ttl_seconds": max(s.get("ttl_seconds") or 10800 for s in env_deploys), "cpu": 1.0, "memory_mb": 2048,
              "metadata": {},
              "env_params": {"env": env_ids[0] if len(env_ids) == 1 else list(env_ids), **({"role": role} if role else {})}}
     steps.insert(steps.index(env_deploys[-1]) + 1, front)
-    deploy["env_ids"] = [ENV_NAME]
+    deploy["env_ids"] = [env]
     deploy["depends_on"] = [*(deploy.get("depends_on") or []), _dep(deploy, front["id"])]
     harness = runs_as(deploy, for_agent)
     if harness not in TAKES_BUILTIN_TOOLS:
@@ -120,22 +165,52 @@ def wrap_steps(steps: list[dict], agent: Optional[str] = None, keep_builtins: bo
     else:
         deploy["builtin_tools"] = {"disable": "*"}
         builtins = "off"
-    prompts = [s for s in steps if s.get("type") == "prompt_agent" and s.get("agent_name") == agent]
-    noted = 0
-    if note:
-        for s in prompts:
-            s["system_prompt"] = f"{(s.get('system_prompt') or '').rstrip()}\n\n{NOTE}".lstrip()
-            noted += 1
-    if call_log and prompts:
+    drivers = [s for s in steps if _drives(s, agent)]
+    noted = _add_note(deploy, drivers) if note else None
+    result_id = None
+    if call_log:
+        result_id = "agentvfs_calls" + (f"_{re.sub(r'[^A-Za-z0-9]', '_', agent or 'default')}" if several else "")
+        after = drivers or [s for s in steps if s["id"] in _leaves(steps)]  # no step drives it: at the end of the run
         steps.append({"id": f"{deploy['id']}-agentvfs-calls", "type": "run_code", "version": None,
-                      "fail_task_on_error": False, "depends_on": [_dep(prompts[-1], s["id"]) for s in prompts],
+                      "fail_task_on_error": False, "depends_on": [_dep(deploy, s["id"]) for s in after],
                       "script_artifact_id": CALLS_ARTIFACT, "script_artifact_version": None, "script_file": "calls.py",
-                      "entrypoint": "run", "args": {}, "result_id": "agentvfs_calls", "timeout_seconds": 300,
-                      "env_id": ENV_NAME, "agent_name": None, "sandbox_name": None})
-    steps[:] = _ordered(steps)
-    return {"agent": agent, "runs_as": harness, "env": env_ids[0] if len(env_ids) == 1 else env_ids, "role": role,
-            "builtin_tools": builtins,
-            "waits_for_locks": locks, "prompts_noted": noted}
+                      "entrypoint": "run", "args": {}, "result_id": result_id, "timeout_seconds": 300,
+                      "env_id": env, "agent_name": None, "sandbox_name": None})
+    return {"agent": agent, "runs_as": harness, "env": env_ids[0] if len(env_ids) == 1 else env_ids, "vfs_env": env,
+            "role": role, "builtin_tools": builtins, "waits_for_locks": locks, "note": noted, "call_log": result_id}
+
+
+def _drives(step: dict, agent: Optional[str]) -> bool:
+    """Whether ``step`` sends ``agent`` work: a prompt to it, or a verifier it judges for."""
+    if step.get("type") == "prompt_agent":
+        return step.get("agent_name") == agent
+    return agent is not None and step.get("agent_name") == agent and "verifier" in str(step.get("type"))
+
+
+def _add_note(deploy: dict, drivers: list[dict]) -> Optional[str]:
+    """Append NOTE where the agent reads its instructions; where it went, or None if nowhere fits."""
+    append = lambda text: f"{(text or '').rstrip()}\n\n{NOTE}".lstrip()
+    prompts = [s for s in drivers if s.get("type") == "prompt_agent"]
+    policies = [s for s in drivers if s.get("type") != "prompt_agent" and s.get("grading_policy_prompt")]
+    if prompts:
+        for s in prompts:
+            s["system_prompt"] = append(s.get("system_prompt"))
+        return f"system_prompt of {len(prompts)} prompt(s)"
+    if policies:
+        # A judge's grading policy, not its system prompt: a configured system prompt replaces the agent's own.
+        for s in policies:
+            s["grading_policy_prompt"] = append(s["grading_policy_prompt"])
+        return f"grading_policy_prompt of {len(policies)} verifier(s)"
+    if deploy.get("system_prompt"):
+        deploy["system_prompt"] = append(deploy["system_prompt"])
+        return "its deploy_agent system_prompt"
+    return None
+
+
+def _leaves(steps: list[dict]) -> set[str]:
+    """The steps no other step depends on, call-log steps left out."""
+    needed = {_dep_id(d) for s in steps for d in s.get("depends_on") or []}
+    return {s["id"] for s in steps if s["id"] not in needed and not s["id"].endswith("-agentvfs-calls")}
 
 
 def _dep_id(dep) -> str | None:
@@ -161,22 +236,3 @@ def _ordered(steps: list[dict]) -> list[dict]:
         out.append(ready)
         done.add(ready["id"])
     return out
-
-
-def wrap_bundle(src: Path, out: Path, agent: Optional[str] = None, keep_builtins: bool = False,
-                note: bool = True, call_log: bool = True, build: bool = False,
-                for_agent: Optional[str] = None) -> list[dict]:
-    """Copy ``src`` to ``out`` with every task's agent working through agentvfs."""
-    if out.exists():
-        raise WrapError(f"{out} exists")
-    shutil.copytree(src, out)
-    add_env(out, build)
-    changes = []
-    for path in sorted((out / "tasks").glob("*.json")):
-        doc = json.loads(path.read_text())
-        steps = doc if isinstance(doc, list) else doc["steps"]
-        changes.append({"task": path.name, **wrap_steps(steps, agent, keep_builtins, note, call_log, for_agent)})
-        path.write_text(json.dumps(doc, indent=2) + "\n")
-    if not changes:
-        raise WrapError(f"{src} has no tasks/*.json")
-    return changes

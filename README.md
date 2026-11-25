@@ -36,15 +36,34 @@ agent-env run my-bundle-vfs
 `wrap` copies the bundle and, in each task, puts an `agentvfs` env in front of the agent's envs:
 
 - a `deploy_env` of `agentvfs` names the envs it fronts (`env_params.env`, one id or a list) and the agent's role, and
-  waits for those envs and for every tool lock on the role;
+  waits for those envs, for every tool lock on the role, and for whatever the agent's own deploy waits for;
 - the agent's `env_ids` become `["agentvfs"]`, and its built-in tools go off (`builtin_tools: {"disable": "*"}`);
-- the agent's system prompt gains one paragraph on working through commands (`--no-note` leaves it as it is).
+- the agent's instructions gain one paragraph on working through commands (`--no-note` leaves them as they are).
 
-After the agent's prompts, a step copies the agentvfs env's log of the agent's shell lines and the tool calls each
-made into the run's record, as `script_results.agentvfs_calls` (`--no-call-log` leaves it out). Every other step
-(other agents, judges, verifiers) is kept as it is. The agent to wrap is the one the tasks prompt; name another with
-`--agent`, and keep its built-in tools with `--keep-builtins` (see [Agents](#agents) for which agents can have them
-turned off).
+After the steps that send the agent work, a step copies the agentvfs env's log of the agent's shell lines and the tool
+calls each made into the run's record, as `script_results.agentvfs_calls` (`--no-call-log` leaves it out). Every other
+step (other agents, judges, verifiers) is kept as it is. Keep the agent's built-in tools with `--keep-builtins` (see
+[Agents](#agents) for which agents can have them turned off).
+
+### Choosing the agents
+
+The agent to wrap is the one the tasks prompt. Name others with `--agent`, by their `agent_name`, once per agent:
+
+```bash
+agent-env vfs wrap my-bundle --out my-bundle-vfs --agent judge --agent judge-b   # only the judges work through agentvfs
+```
+
+Any agent a `deploy_agent` deploys can be wrapped, whatever sends it work:
+
+| The agent | Its paragraph goes in | Its log is copied |
+|---|---|---|
+| prompted by `prompt_agent` steps | their `system_prompt` | after its prompts |
+| a judge for verifier steps | their `grading_policy_prompt` (a configured system prompt would replace the agent's own) | after those verifiers |
+| sent work some other way, such as by an env's triggers | its `deploy_agent` `system_prompt`, if it has one | at the end of the run |
+
+Each wrapped agent gets its own agentvfs env, so two agents of one role (two judges, say) don't share a workspace.
+With one agent wrapped its env is `agentvfs` and its log `agentvfs_calls`; with several, each agent's env is
+`agentvfs-<agent>` and its log `agentvfs_calls_<agent>`.
 
 To wire tasks yourself, add the env with `agent-env vfs add-env my-bundle` and deploy it after the env it fronts:
 

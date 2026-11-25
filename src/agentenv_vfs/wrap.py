@@ -2,7 +2,7 @@
 
 For each task, the agent (the one its prompt_agent steps prompt, or ``agent``) gets an agentvfs env in front of its
 one env: a deploy_env of ``agentvfs`` that waits for the env and for every tool lock on the agent's role, then the
-agent's ``env_ids`` become that env and its built-in tools go off. After the agent's prompts, a run_code step copies
+agent's ``env_ids`` become that env and, where the agent it runs as can have them turned off, its built-in tools go off. After the agent's prompts, a run_code step copies
 the env's log of the agent's shell lines and tool calls into the run's record (``script_results.agentvfs_calls``).
 Every other step is kept as it is.
 """
@@ -17,6 +17,9 @@ from typing import Optional
 
 ENV_NAME = "agentvfs"
 CALLS_ARTIFACT = "agentvfs-calls"
+# The agent-env agents whose agent-config takes builtin_tools (agentenv-framework 0.9.1637; tests/test_wrap.py checks it
+# against the installed framework): deploy_agent refuses builtin_tools for any other.
+TAKES_BUILTIN_TOOLS = frozenset({"claude-code", "codex", "opencode"})
 IMAGE = "ghcr.io/earakely-scale/agentenv-vfs"  # the published server image, tagged with the plugin's version
 
 
@@ -61,8 +64,18 @@ def add_env(bundle: Path, build: bool = False) -> Path:
     return env
 
 
+def runs_as(deploy: dict, for_agent: Optional[str] = None) -> str:
+    """The agent a deploy_agent step runs: ``for_agent`` (what `agent-env run --agent` would name), else the step's
+    a2a_agent_id, else agent-env's default; by its alias, the last part of its id (claude-code)."""
+    agent_id = for_agent or deploy.get("a2a_agent_id")
+    if not agent_id:
+        from agent_env.config import get_config
+        agent_id = get_config().get_default_a2a_agent_id()
+    return agent_id.rstrip("/").rsplit("/", 1)[-1]
+
+
 def wrap_steps(steps: list[dict], agent: Optional[str] = None, keep_builtins: bool = False, note: bool = True,
-               call_log: bool = True) -> dict:
+               call_log: bool = True, for_agent: Optional[str] = None) -> dict:
     """Edit one task's steps in place; return what changed."""
     prompted = {s.get("agent_name") for s in steps if s.get("type") == "prompt_agent"}
     if agent is None:
@@ -94,8 +107,16 @@ def wrap_steps(steps: list[dict], agent: Optional[str] = None, keep_builtins: bo
     steps.insert(steps.index(env_deploys[0]) + 1, front)
     deploy["env_ids"] = [ENV_NAME]
     deploy["depends_on"] = [*(deploy.get("depends_on") or []), _dep(deploy, front["id"])]
-    if not keep_builtins:
+    harness = runs_as(deploy, for_agent)
+    if harness not in TAKES_BUILTIN_TOOLS:
+        # deploy_agent refuses builtin_tools for it, the task's own selection too: the agent keeps its own tools.
+        deploy.pop("builtin_tools", None)
+        builtins = f"kept: {harness} can't have them turned off"
+    elif keep_builtins:
+        builtins = "kept (--keep-builtins)"
+    else:
         deploy["builtin_tools"] = {"disable": "*"}
+        builtins = "off"
     prompts = [s for s in steps if s.get("type") == "prompt_agent" and s.get("agent_name") == agent]
     noted = 0
     if note:
@@ -109,7 +130,8 @@ def wrap_steps(steps: list[dict], agent: Optional[str] = None, keep_builtins: bo
                       "entrypoint": "run", "args": {}, "result_id": "agentvfs_calls", "timeout_seconds": 300,
                       "env_id": ENV_NAME, "agent_name": None, "sandbox_name": None})
     steps[:] = _ordered(steps)
-    return {"agent": agent, "env": target, "role": role, "waits_for_locks": locks, "prompts_noted": noted}
+    return {"agent": agent, "runs_as": harness, "env": target, "role": role, "builtin_tools": builtins,
+            "waits_for_locks": locks, "prompts_noted": noted}
 
 
 def _dep_id(dep) -> str | None:
@@ -138,7 +160,8 @@ def _ordered(steps: list[dict]) -> list[dict]:
 
 
 def wrap_bundle(src: Path, out: Path, agent: Optional[str] = None, keep_builtins: bool = False,
-                note: bool = True, call_log: bool = True, build: bool = False) -> list[dict]:
+                note: bool = True, call_log: bool = True, build: bool = False,
+                for_agent: Optional[str] = None) -> list[dict]:
     """Copy ``src`` to ``out`` with every task's agent working through agentvfs."""
     if out.exists():
         raise WrapError(f"{out} exists")
@@ -148,7 +171,7 @@ def wrap_bundle(src: Path, out: Path, agent: Optional[str] = None, keep_builtins
     for path in sorted((out / "tasks").glob("*.json")):
         doc = json.loads(path.read_text())
         steps = doc if isinstance(doc, list) else doc["steps"]
-        changes.append({"task": path.name, **wrap_steps(steps, agent, keep_builtins, note, call_log)})
+        changes.append({"task": path.name, **wrap_steps(steps, agent, keep_builtins, note, call_log, for_agent)})
         path.write_text(json.dumps(doc, indent=2) + "\n")
     if not changes:
         raise WrapError(f"{src} has no tasks/*.json")

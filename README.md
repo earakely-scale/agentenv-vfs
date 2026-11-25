@@ -43,7 +43,8 @@ agent-env run my-bundle-vfs
 After the agent's prompts, a step copies the agentvfs env's log of the agent's shell lines and the tool calls each
 made into the run's record, as `script_results.agentvfs_calls` (`--no-call-log` leaves it out). Every other step
 (other agents, judges, verifiers) is kept as it is. The agent to wrap is the one the tasks prompt; name another with
-`--agent`, and keep its built-in tools with `--keep-builtins`.
+`--agent`, and keep its built-in tools with `--keep-builtins` (see [Agents](#agents) for which agents can have them
+turned off).
 
 To wire tasks yourself, add the env with `agent-env vfs add-env my-bundle` and deploy it after the env it fronts:
 
@@ -56,6 +57,17 @@ To wire tasks yourself, add the env with `agent-env vfs add-env my-bundle` and d
 
 [`examples/notes`](examples/notes) is a small bundle to try it on: a notes env, a task, and a check that reads the
 notes back.
+
+## Agents
+
+It works with any agent-env agent: agentvfs is an env, and the agent reaches it over MCP as it reaches any env. Pass
+`wrap --for-agent NAME` when you run with `agent-env run --agent NAME`, so the bundle fits that agent:
+
+| Agent | Built-in tools | Checked with |
+|---|---|---|
+| claude-code (the default), codex, opencode | turned off: the shell is the agent's only tool | the notes example; claude-code and codex on a gateway env's tasks too |
+| gemini, hermes, letta-code, openhands, pi | kept: agent-env can't turn them off | the notes example; gemini on a gateway env's task too |
+| pydantic-ai | kept | not yet: its own coding tools include one named `shell`, which agent-env adds MCP tools beside without a prefix |
 
 ## How it works
 

@@ -22,11 +22,14 @@ def vfs() -> None:
 @click.option("--no-note", is_flag=True, help="Leave the agent's system prompt as it is.")
 @click.option("--no-call-log", is_flag=True, help="Don't copy the agent's shell lines and tool calls into the run.")
 @click.option("--build", is_flag=True, help="Build the agentvfs image from the bundle instead of pulling it.")
+@click.option("--for-agent", default=None,
+              help="The agent the run will use (as `agent-env run --agent` names it), when not the task's own; it "
+                   "decides whether the agent's built-in tools can be turned off.")
 def wrap(bundle: Path, out: Path, agent: str | None, keep_builtins: bool, no_note: bool, no_call_log: bool,
-         build: bool) -> None:
+         build: bool, for_agent: str | None) -> None:
     """Copy BUNDLE to --out with its agent working through agentvfs in front of its env."""
     try:
-        changes = wrap_bundle(bundle, out, agent, keep_builtins, not no_note, not no_call_log, build)
+        changes = wrap_bundle(bundle, out, agent, keep_builtins, not no_note, not no_call_log, build, for_agent)
     except WrapError as e:
         raise click.ClickException(str(e)) from e
     for c in changes:

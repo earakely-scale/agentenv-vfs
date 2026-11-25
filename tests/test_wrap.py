@@ -1,8 +1,10 @@
 import json
+from pathlib import Path
 
+import agent_env
 import pytest
 
-from agentenv_vfs.wrap import ENV_NAME, NOTE, WrapError, wrap_bundle, wrap_steps
+from agentenv_vfs.wrap import ENV_NAME, NOTE, TAKES_BUILTIN_TOOLS, WrapError, wrap_bundle, wrap_steps
 
 
 def short_form():
@@ -77,6 +79,26 @@ def test_call_log_step():
     steps = short_form()
     wrap_steps(steps, call_log=False)
     assert not any(s["id"].endswith("-agentvfs-calls") for s in steps)
+
+
+def test_builtin_tools_follow_the_agent():
+    steps = with_role_and_locks()
+    change = wrap_steps(steps, for_agent="gemini")
+    solver = next(s for s in steps if s["id"] == "deploy-solver")
+    assert "builtin_tools" not in solver and change["builtin_tools"].startswith("kept: gemini")
+    steps = with_role_and_locks()
+    assert wrap_steps(steps, for_agent="@local/agentenv-framework/agents/codex")["builtin_tools"] == "off"
+    steps = short_form()
+    steps[1]["a2a_agent_id"] = "pydantic-ai"
+    assert wrap_steps(steps)["runs_as"] == "pydantic-ai"
+
+
+def test_agents_that_take_builtin_tools():
+    """The table matches the installed framework: an agent takes builtin_tools when its sources handle them."""
+    agents = Path(agent_env.__file__).parent / "agents" / "agents"
+    taking = {d.name for d in agents.iterdir() if d.is_dir()
+              and any("builtin_tools" in f.read_text(errors="ignore") for f in d.rglob("*.py"))}
+    assert taking == TAKES_BUILTIN_TOOLS
 
 
 def test_options_and_refusals():

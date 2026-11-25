@@ -58,8 +58,9 @@ notes back.
 ## How it works
 
 - **One tool.** The agent's only tool is `shell`, a bash line in its role's workspace. `/SKILL.md` lists the commands,
-  `<command> --help` shows one, and `/workspace` and `/tmp` are its own. `curl` and `wget` are refused: the env is
-  reached through its commands.
+  `<command> --help` shows one, and `/workspace` and `/tmp` are its own. `python3` is CPython in Pyodide, inside the
+  workspace: its standard library, the workspace's files and commands, no network. `curl` and `wget` are refused: the
+  env is reached through its commands.
 - **Commands are the env's tools.** Each tool is a command named as the tool is, each parameter a flag of the same name
   (`--channel_id`, or `--channel-id`); a list or an object is one JSON value. The `shell` tool's description lists every
   command for the role named at deploy, so the agent sees them up front, as it would see MCP tools.
@@ -72,7 +73,7 @@ notes back.
 ## Not covered yet
 
 - An agent with more than one env (`wrap` fronts one).
-- Python in the workspace (Mirage can run it in Pyodide); the shell has coreutils, `jq` and the env's commands.
+- Python packages beyond the standard library (Pyodide fetches them from the network, which the workspace refuses).
 - Mounting an env's data as files: reads are commands, as writes are.
 - Waiting for the world: a shell-only agent waits with `sleep`.
 - Runs on remote sandbox providers have not been tried.

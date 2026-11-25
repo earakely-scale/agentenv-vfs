@@ -26,7 +26,8 @@ async def main():
     await client.add_data(VFS, [DataPart(data={"mcp_url": FAKE, "role": "alice"})], timeout=300)
     await lines("alice", ["add_note --title t1 --body hello --tags a --tags b", "list_notes --limit 2 | jq -c .",
                           "fail_always --reason no; echo exit=$?", "add_note --help | head -6", "curl -s http://example.com",
-                          "date", "ls /"])
+                          "date", "ls /", "list_notes --limit 3 | python3 -c \"import json,sys; print(len(json.load(sys.stdin)['notes']))\"",
+                          "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://example.com\", timeout=5)'"])
     await lines("bob", ["list_notes --limit 1"])
     print((await client.get_data(VFS, timeout=30)).model_dump()["parts"][0]["data"])
 

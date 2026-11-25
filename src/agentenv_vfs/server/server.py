@@ -153,11 +153,14 @@ class Workspace:
         await self.shell("cd /workspace")
 
     def _config(self) -> dict:
-        disk = lambda d: {"vfs": "disk", "mode": "write", "read": "fresh", "config": {"root": str(self.run / d)}}
+        disk = lambda d: {"vfs": "disk", "mode": "exec", "read": "fresh", "config": {"root": str(self.run / d)}}
         deny = {"decision": "deny", "reason": "the workspace reaches its env through its commands"}
         config = {
             "mode": "exec",
             "mounts": {"/workspace": disk("workspace"), "/tmp": disk("tmp")},
+            # python3: CPython in Pyodide (WebAssembly), inside the workspace: its standard library, no network.
+            "machines": {"python": {"provider": "in_process", "runtime": "pyodide",
+                                    "max_memory": os.environ.get("AGENTENV_VFS_PYTHON_MEMORY", "1G")}},
             "clis": {t["name"]: {"cli": t["name"], "machine": "in_process",
                                  "config": {"url": self.bridge_url, "role": self.role}} for t in self.tools},
             "profiles": {"default": {"commands": {"curl": deny, "wget": deny}}},

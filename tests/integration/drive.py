@@ -1,6 +1,8 @@
 """Front the fake env with agentenv-vfs and run shell lines as two roles: python drive.py VFS_URL FAKE_MCP_URL."""
 import asyncio
+import json
 import sys
+from pathlib import Path
 
 from agentenv_protocol import DataPart, client
 from mcp import ClientSession
@@ -30,6 +32,16 @@ async def main():
                           "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://example.com\", timeout=5)'"])
     await lines("bob", ["list_notes --limit 1"])
     print((await client.get_data(VFS, timeout=30)).model_dump()["parts"][0]["data"])
+    # The run-record step's script, against this server: every line and call, in order, by role.
+    sys.path.insert(0, str(Path(__file__).parents[2] / "src" / "agentenv_vfs" / "calls"))
+    import calls
+    log = await asyncio.to_thread(calls.run, {"env": {"url": VFS, "headers": {}}, "args": {}, "results": {}})
+    print("call log:", {k: v for k, v in log.items() if k != "log"})
+    for row in log["log"][:4]:
+        print("  ", json.dumps(row)[:200])
+    first = [r for r in log["log"] if r["kind"] == "call"][0]
+    assert first["role"] == "alice" and first["tool"] == "add_note" and first["line"] == 1 and first["ok"]
+    assert log["failed_calls"] >= 1 and log["by_tool"]["list_notes"] >= 2
 
 
 asyncio.run(main())

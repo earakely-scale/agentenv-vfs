@@ -40,8 +40,10 @@ agent-env run my-bundle-vfs
 - the agent's `env_ids` become `["agentvfs"]`, and its built-in tools go off (`builtin_tools: {"disable": "*"}`);
 - the agent's system prompt gains one paragraph on working through commands (`--no-note` leaves it as it is).
 
-Every other step (other agents, judges, verifiers) is kept as it is. The agent to wrap is the one the tasks prompt;
-name another with `--agent`, and keep its built-in tools with `--keep-builtins`.
+After the agent's prompts, a step copies the agentvfs env's log of the agent's shell lines and the tool calls each
+made into the run's record, as `script_results.agentvfs_calls` (`--no-call-log` leaves it out). Every other step
+(other agents, judges, verifiers) is kept as it is. The agent to wrap is the one the tasks prompt; name another with
+`--agent`, and keep its built-in tools with `--keep-builtins`.
 
 To wire tasks yourself, add the env with `agent-env vfs add-env my-bundle` and deploy it after the env it fronts:
 
@@ -67,8 +69,13 @@ notes back.
 - **Calls go to the env as the agent.** A command's call goes to the fronted env's MCP endpoint with the agent's
   `AgentEnv-Role`, which the agent sends with every call. So the env sees the calls an MCP agent of that role would
   make: its tool locks, triggers and logs all apply, and each role gets its own workspace.
-- **Where it runs.** The env is an MCP server env whose image (Python, Node 24 and Mirage's npm packages) the bundle
-  builds from `envs/agentvfs`. It reaches the fronted env at the address agent-env gives for its sandbox.
+- **What a run keeps.** The env logs every shell line and every tool call a line makes (role, tool, arguments,
+  outcome, timing), in order. `data/get` of `calls.jsonl` returns it, and the step `wrap` adds copies it into the run.
+- **Where it runs.** The env is an MCP server env. Its image (Python, Node 24, Mirage's npm packages and Pyodide) is
+  published at `ghcr.io/earakely-scale/agentenv-vfs`, tagged with the plugin's version, for linux/amd64 and
+  linux/arm64. A wrapped bundle pulls it, and keeps its build context in `envs/agentvfs`, which a deploy builds only
+  where it can't pull the image (`--build` always builds it). The env reaches the fronted env at the address
+  agent-env gives for its sandbox.
 
 ## Not covered yet
 
@@ -85,6 +92,11 @@ uv venv && uv pip install -e . 'agentenv-framework>=0.9.1637' pytest
 .venv/bin/python -m pytest tests            # unit tests
 PATH=.venv/bin:$PATH tests/integration/run.sh  # the server image against a plain MCP server (Docker)
 ```
+
+## Releasing
+
+Set `version` in `pyproject.toml`, push to `main`, then tag `v<version>` and push the tag: the `image` workflow
+publishes `ghcr.io/earakely-scale/agentenv-vfs:<version>`, which `wrap` of that version points bundles at.
 
 ## License
 

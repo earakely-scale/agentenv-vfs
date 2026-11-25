@@ -2,19 +2,31 @@
 
 For each task, the agent (the one its prompt_agent steps prompt, or ``agent``) gets an agentvfs env in front of its
 one env: a deploy_env of ``agentvfs`` that waits for the env and for every tool lock on the agent's role, then the
-agent's ``env_ids`` become that env and its built-in tools go off. Every other step is kept as it is.
+agent's ``env_ids`` become that env and its built-in tools go off. After the agent's prompts, a run_code step copies
+the env's log of the agent's shell lines and tool calls into the run's record (``script_results.agentvfs_calls``).
+Every other step is kept as it is.
 """
 from __future__ import annotations
 
 import json
 import shutil
+from importlib.metadata import version
 from importlib.resources import files
 from pathlib import Path
 from typing import Optional
 
 ENV_NAME = "agentvfs"
-ENV_TOML = (f'type = "{ENV_NAME}"\nenvironment_name = "agentvfs"\nenv_provider_type = "server"\n'
-            'image = { dockerfile = "Dockerfile" }\n')
+CALLS_ARTIFACT = "agentvfs-calls"
+IMAGE = "ghcr.io/earakely-scale/agentenv-vfs"  # the published server image, tagged with the plugin's version
+
+
+def env_toml(build: bool = False) -> str:
+    """The agentvfs env's env.toml: the published image of this version, built from the folder only where it can't be
+    pulled; with ``build``, always built from the folder."""
+    image = ('{ dockerfile = "Dockerfile" }' if build
+             else f'{{ ref = "{IMAGE}:{version("agentenv-vfs")}", dockerfile = "Dockerfile" }}')
+    return f'type = "{ENV_NAME}"\nenvironment_name = "agentvfs"\nenv_provider_type = "server"\nimage = {image}\n'
+
 SERVER_FILES = ("Dockerfile", ".dockerignore", "package.json", "package-lock.json", "server.py", "listing.py",
                 "preload.ts", "cli.ts")
 NOTE = ("Your tools are shell commands in the workspace of your `shell` tool: each tool is a command of the same name, "
@@ -26,14 +38,18 @@ class WrapError(ValueError):
     pass
 
 
-def add_env(bundle: Path) -> Path:
+def add_env(bundle: Path, build: bool = False) -> Path:
     """Write envs/agentvfs (the server's build context and env.toml) into ``bundle`` and require the plugin."""
     env = bundle / "envs" / ENV_NAME
     env.mkdir(parents=True, exist_ok=True)
     source = files("agentenv_vfs") / "server"
     for name in SERVER_FILES:
         (env / name).write_bytes((source / name).read_bytes())
-    (env / "env.toml").write_text(ENV_TOML)
+    (env / "env.toml").write_text(env_toml(build))
+    calls = bundle / "artifacts" / CALLS_ARTIFACT
+    calls.mkdir(parents=True, exist_ok=True)
+    for name in ("artifact.toml", "calls.py"):
+        (calls / name).write_bytes((files("agentenv_vfs") / "calls" / name).read_bytes())
     toml = bundle / "bundle.toml"
     text = toml.read_text() if toml.exists() else ""
     if "agentenv-vfs" not in text:
@@ -45,7 +61,8 @@ def add_env(bundle: Path) -> Path:
     return env
 
 
-def wrap_steps(steps: list[dict], agent: Optional[str] = None, keep_builtins: bool = False, note: bool = True) -> dict:
+def wrap_steps(steps: list[dict], agent: Optional[str] = None, keep_builtins: bool = False, note: bool = True,
+               call_log: bool = True) -> dict:
     """Edit one task's steps in place; return what changed."""
     prompted = {s.get("agent_name") for s in steps if s.get("type") == "prompt_agent"}
     if agent is None:
@@ -79,12 +96,18 @@ def wrap_steps(steps: list[dict], agent: Optional[str] = None, keep_builtins: bo
     deploy["depends_on"] = [*(deploy.get("depends_on") or []), _dep(deploy, front["id"])]
     if not keep_builtins:
         deploy["builtin_tools"] = {"disable": "*"}
+    prompts = [s for s in steps if s.get("type") == "prompt_agent" and s.get("agent_name") == agent]
     noted = 0
     if note:
-        for s in steps:
-            if s.get("type") == "prompt_agent" and s.get("agent_name") == agent:
-                s["system_prompt"] = f"{(s.get('system_prompt') or '').rstrip()}\n\n{NOTE}".lstrip()
-                noted += 1
+        for s in prompts:
+            s["system_prompt"] = f"{(s.get('system_prompt') or '').rstrip()}\n\n{NOTE}".lstrip()
+            noted += 1
+    if call_log and prompts:
+        steps.append({"id": f"{deploy['id']}-agentvfs-calls", "type": "run_code", "version": None,
+                      "fail_task_on_error": False, "depends_on": [_dep(prompts[-1], s["id"]) for s in prompts],
+                      "script_artifact_id": CALLS_ARTIFACT, "script_artifact_version": None, "script_file": "calls.py",
+                      "entrypoint": "run", "args": {}, "result_id": "agentvfs_calls", "timeout_seconds": 300,
+                      "env_id": ENV_NAME, "agent_name": None, "sandbox_name": None})
     steps[:] = _ordered(steps)
     return {"agent": agent, "env": target, "role": role, "waits_for_locks": locks, "prompts_noted": noted}
 
@@ -115,17 +138,17 @@ def _ordered(steps: list[dict]) -> list[dict]:
 
 
 def wrap_bundle(src: Path, out: Path, agent: Optional[str] = None, keep_builtins: bool = False,
-                note: bool = True) -> list[dict]:
+                note: bool = True, call_log: bool = True, build: bool = False) -> list[dict]:
     """Copy ``src`` to ``out`` with every task's agent working through agentvfs."""
     if out.exists():
         raise WrapError(f"{out} exists")
     shutil.copytree(src, out)
-    add_env(out)
+    add_env(out, build)
     changes = []
     for path in sorted((out / "tasks").glob("*.json")):
         doc = json.loads(path.read_text())
         steps = doc if isinstance(doc, list) else doc["steps"]
-        changes.append({"task": path.name, **wrap_steps(steps, agent, keep_builtins, note)})
+        changes.append({"task": path.name, **wrap_steps(steps, agent, keep_builtins, note, call_log)})
         path.write_text(json.dumps(doc, indent=2) + "\n")
     if not changes:
         raise WrapError(f"{src} has no tasks/*.json")

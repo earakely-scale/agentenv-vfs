@@ -6,20 +6,27 @@ that ran it, so the fronted env sees the same tool calls an MCP agent of that ro
 
 ``data/add`` (a DataPart) names the fronted env: ``{"mcp_url", "role"?, "headers"?}``. With a ``role``, that role's
 workspace opens now and the ``shell`` tool's description lists its commands; any other role's opens at its first call.
+
+Every shell line, and every tool call a line makes, is kept in order: ``data/get`` of ``calls.jsonl`` returns them.
 """
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import socket
+import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from agentenv_protocol import AgentEnvEnvironment, DataPart, add_data, environment_card, get_data, reset_data, tool
+from agentenv_protocol import (DATA_OBJECTS_EXTENSION_URI, AgentEnvEnvironment, DataPart, FilePart, add_data,
+                               environment_card, get_data, reset_data, tool)
 from agentenv_protocol.tool_context import ToolContext
+from agentenv_protocol.types import FileWithBytes
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.types import CallToolResult, TextContent
@@ -32,6 +39,8 @@ RUNS = Path(os.environ.get("AGENTENV_VFS_RUNS", "/var/lib/agentenv-vfs"))
 NODE = os.environ.get("AGENTENV_VFS_NODE", "node")
 ROLE_HEADER = "AgentEnv-Role"
 DEFAULT_ROLE = "default"
+CALLS = "calls.jsonl"
+CLIP = int(os.environ.get("AGENTENV_VFS_LOG_CLIP", "2000"))  # longest string a log entry keeps
 SHELL_DOC = ("Run a bash command line in the workspace, from its working directory. Pipes, redirects and Unix commands "
              "work; /SKILL.md lists the commands and /VFS.md the mounts.")
 
@@ -97,11 +106,58 @@ class Fronted:
         await asyncio.gather(*(s.close() for s in sessions.values()))
 
 
+class CallLog:
+    """Every shell line and every tool call a line made, in order: what a run keeps of the agent's tool use."""
+
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+        self.current: dict[str, int] = {}  # each role's running line
+
+    def line(self, role: str, command: str) -> dict:
+        row = {"kind": "line", "line": sum(r["kind"] == "line" for r in self.rows) + 1, "at": _now(), "role": role,
+               "command": _clip(command)}
+        self.rows.append(row)
+        self.current[role] = row["line"]
+        return row
+
+    def line_done(self, row: dict, done: dict, ms: float) -> None:
+        self.current.pop(row["role"], None)
+        row.update(exit_code=done.get("exit_code"), ms=round(ms), stdout_chars=len(done.get("stdout") or ""),
+                   stderr_chars=len(done.get("stderr") or ""))
+
+    def call(self, role: str, tool: str, arguments: dict, reply: dict, ms: float) -> None:
+        row = {"kind": "call", "line": self.current.get(role), "at": _now(), "role": role, "tool": tool,
+               "arguments": _clip(arguments), "ok": reply.get("ok"), "ms": round(ms),
+               "result_chars": len(reply.get("result") or "")}
+        if not reply.get("ok"):
+            row["error"] = _clip(reply.get("error"))
+        self.rows.append(row)
+
+    def jsonl(self) -> bytes:
+        return "".join(json.dumps(r) + "\n" for r in self.rows).encode()
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _clip(value):
+    """``value`` with every string past ``CLIP`` characters cut, saying how much was cut."""
+    if isinstance(value, str):
+        return value if len(value) <= CLIP else f"{value[:CLIP]}...[+{len(value) - CLIP} chars]"
+    if isinstance(value, dict):
+        return {k: _clip(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_clip(v) for v in value]
+    return value
+
+
 class Bridge:
     """A loopback HTTP endpoint the workspace's commands post their calls to: ``POST /call {role, tool, arguments}``."""
 
-    def __init__(self, fronted: Fronted) -> None:
+    def __init__(self, fronted: Fronted, log: CallLog) -> None:
         self.fronted = fronted
+        self.log = log
         self.server: asyncio.base_events.Server | None = None
         self.url = ""
 
@@ -115,7 +171,9 @@ class Bridge:
             length = next((int(line.split(b":", 1)[1]) for line in head.split(b"\r\n")
                            if line.lower().startswith(b"content-length:")), 0)
             body = json.loads(await reader.readexactly(length)) if length else {}
-            reply = await self.fronted.call(body.get("role") or DEFAULT_ROLE, body["tool"], body.get("arguments") or {})
+            role, args, started = body.get("role") or DEFAULT_ROLE, body.get("arguments") or {}, time.monotonic()
+            reply = await self.fronted.call(role, body["tool"], args)
+            self.log.call(role, body["tool"], args, reply, (time.monotonic() - started) * 1000)
         except Exception as e:
             reply = {"ok": False, "error": f"{type(e).__name__}: {e}"}
         data = json.dumps(reply).encode()
@@ -138,6 +196,7 @@ class Workspace:
         self.run = RUNS / self.id
         self.process: asyncio.subprocess.Process | None = None
         self.client: httpx.AsyncClient | None = None
+        self.running = asyncio.Lock()  # the daemon runs a session's lines one at a time; so does this
 
     async def open(self) -> None:
         for d in ("workspace", "tmp", "mirage-home"):
@@ -249,6 +308,7 @@ class AgentVfs(AgentEnvEnvironment):
         self.clock: str | None = None
         self.workspaces: dict[str, Workspace] = {}
         self.opening = asyncio.Lock()
+        self.log = CallLog()
 
     async def _workspace(self, role: str) -> Workspace:
         async with self.opening:
@@ -279,7 +339,8 @@ class AgentVfs(AgentEnvEnvironment):
         await self._reset()
         config = _config_of(parts)
         self.fronted = Fronted(config["mcp_url"], config.get("headers"))
-        self.bridge = Bridge(self.fronted)
+        self.log = CallLog()
+        self.bridge = Bridge(self.fronted, self.log)
         await self.bridge.start()
         self.clock = await _clock(config["mcp_url"])
         if role := config.get("role"):
@@ -288,15 +349,25 @@ class AgentVfs(AgentEnvEnvironment):
 
     @get_data
     async def _state(self, paths: list | None = None) -> list:
+        if paths:
+            return [FilePart(file=FileWithBytes(bytes=base64.b64encode(self.log.jsonl()).decode()),
+                             metadata={DATA_OBJECTS_EXTENSION_URI: {"path": CALLS}}) for p in paths if p == CALLS]
+        calls = [r for r in self.log.rows if r["kind"] == "call"]
         return [DataPart(data={"fronted": self.fronted.mcp_url if self.fronted else None,
-                               "roles": {r: [t["name"] for t in w.tools] for r, w in self.workspaces.items()}})]
+                               "roles": {r: [t["name"] for t in w.tools] for r, w in self.workspaces.items()},
+                               "lines": len(self.log.rows) - len(calls), "calls": len(calls),
+                               "failed_calls": sum(not r["ok"] for r in calls)})]
 
     @tool()
     async def shell(self, command: str) -> CallToolResult:
         """Run a bash command line in the workspace, from its working directory. Pipes, redirects and Unix commands
         work; /SKILL.md lists the commands and /VFS.md the mounts."""
-        workspace = await self._workspace(ToolContext.current().role or DEFAULT_ROLE)
-        done = await workspace.shell(command)
+        role = ToolContext.current().role or DEFAULT_ROLE
+        workspace = await self._workspace(role)
+        async with workspace.running:
+            row, started = self.log.line(role, command), time.monotonic()
+            done = await workspace.shell(command)
+            self.log.line_done(row, done, (time.monotonic() - started) * 1000)
         text = done["stdout"]
         if done["stderr"]:
             text = f"{text}\n{done['stderr']}" if text else done["stderr"]

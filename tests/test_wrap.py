@@ -67,6 +67,18 @@ def test_role_locks_and_order():
     assert next(s for s in steps if s["id"] == "prompt")["system_prompt"].startswith("Use send_message.\n\n")
 
 
+def test_call_log_step():
+    steps = with_role_and_locks()
+    wrap_steps(steps)
+    log = next(s for s in steps if s["id"] == "deploy-solver-agentvfs-calls")
+    assert log["type"] == "run_code" and log["env_id"] == ENV_NAME and log["result_id"] == "agentvfs_calls"
+    assert deps(log) == ["prompt"] and not log["fail_task_on_error"]
+    assert ids(steps).index("prompt") < ids(steps).index(log["id"])
+    steps = short_form()
+    wrap_steps(steps, call_log=False)
+    assert not any(s["id"].endswith("-agentvfs-calls") for s in steps)
+
+
 def test_options_and_refusals():
     steps = with_role_and_locks()
     wrap_steps(steps, agent="solver", keep_builtins=True, note=False)
@@ -90,8 +102,13 @@ def test_wrap_bundle(tmp_path):
     out = tmp_path / "out"
     assert 'requires = ["agentenv-vfs", "other"]' in (out / "bundle.toml").read_text()
     env = out / "envs" / ENV_NAME
-    assert 'type = "agentvfs"' in (env / "env.toml").read_text()
+    toml = (env / "env.toml").read_text()
+    assert 'type = "agentvfs"' in toml and 'ref = "ghcr.io/earakely-scale/agentenv-vfs:' in toml
+    assert 'dockerfile = "Dockerfile"' in toml
     assert {"Dockerfile", "server.py", "listing.py", "preload.ts", "cli.ts", "package-lock.json"} <= {
         p.name for p in env.iterdir()}
+    assert (out / "artifacts" / "agentvfs-calls" / "calls.py").exists()
     with pytest.raises(WrapError, match="exists"):
         wrap_bundle(src, out)
+    wrap_bundle(src, tmp_path / "built", build=True)
+    assert "ref =" not in (tmp_path / "built" / "envs" / ENV_NAME / "env.toml").read_text()

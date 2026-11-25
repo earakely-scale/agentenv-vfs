@@ -56,7 +56,8 @@ To wire tasks yourself, add the env with `agent-env vfs add-env my-bundle` and d
 ```
 
 [`examples/notes`](examples/notes) is a small bundle to try it on: a notes env, a task, and a check that reads the
-notes back.
+notes back. [`examples/notes-and-contacts`](examples/notes-and-contacts) gives one agent two envs, which `wrap` fronts
+from one workspace.
 
 ## Agents
 

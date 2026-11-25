@@ -1,0 +1,12 @@
+[
+  {"id": "notes", "type": "deploy_env", "env_id": "notes"},
+  {"id": "contacts", "type": "deploy_env", "env_id": "contacts"},
+  {"id": "agent", "type": "deploy_agent", "env_ids": ["notes", "contacts"], "depends_on": ["notes", "contacts"]},
+  {"id": "solve", "type": "prompt_agent", "prompt_id": "solve", "depends_on": ["agent"],
+   "system_prompt": "You keep the team's notes (add_note, list_notes, search_notes, delete_note) and contacts (add_contact, find_contacts, list_contacts).",
+   "prompt": "I just met Lee Park (lee@contoso.com) from Contoso. Add Lee as a contact, and add a note tagged sales about the meeting: they want a pilot in Q3. Then tell me who else we know at a company starting with N."},
+  {"id": "check-notes", "type": "run_code", "env_id": "notes", "script_artifact_id": "notes-check", "script_file": "check.py",
+   "entrypoint": "run", "result_id": "notes_check", "depends_on": ["solve"]},
+  {"id": "check-contacts", "type": "run_code", "env_id": "contacts", "script_artifact_id": "contacts-check", "script_file": "check.py",
+   "entrypoint": "run", "result_id": "contacts_check", "depends_on": ["solve"]}
+]

@@ -1,0 +1,9 @@
+[
+  {"id": "env", "type": "deploy_env", "env_id": "notes"},
+  {"id": "agent", "type": "deploy_agent", "env_ids": ["notes"], "depends_on": ["env"]},
+  {"id": "solve", "type": "prompt_agent", "prompt_id": "solve", "depends_on": ["agent"],
+   "system_prompt": "You keep the team's meeting notes in the notes system (add_note, list_notes, search_notes, delete_note).",
+   "prompt": "Add a note for each of today's meetings, tagged with the team: 'Design review' (design): we picked the card layout; 'Budget sync' (finance): Q3 budget is flat; 'Hiring loop' (people): two offers out. Then tell me which notes, old or new, mention the budget or contracts."},
+  {"id": "check", "type": "run_code", "env_id": "notes", "script_artifact_id": "notes-check", "script_file": "check.py",
+   "entrypoint": "run", "result_id": "notes_check", "depends_on": ["solve"]}
+]

@@ -1,0 +1,10 @@
+{
+  "name": "agentenv-vfs-server",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@struktoai/mirage-core": "0.1.0",
+    "@struktoai/mirage-node": "0.1.0",
+    "@struktoai/mirage-server": "0.1.0"
+  }
+}

@@ -1,0 +1,4 @@
+FROM python:3.12-slim
+RUN pip install --no-cache-dir "mcp==1.30.0"
+COPY fake_env.py /fake_env.py
+CMD ["python", "/fake_env.py"]

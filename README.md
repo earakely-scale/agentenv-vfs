@@ -90,14 +90,15 @@ It works with any agent-env agent: agentvfs is an env, and the agent reaches it 
   published at `ghcr.io/earakely-scale/agentenv-vfs`, tagged with the plugin's version, for linux/amd64 and
   linux/arm64. A wrapped bundle pulls it, and keeps its build context in `envs/agentvfs`, which a deploy builds only
   where it can't pull the image (`--build` always builds it). The env reaches the fronted env at the address
-  agent-env gives for its sandbox.
+  agent-env gives for its sandbox. Checked locally (Docker) and on Modal (`agent-env run --sandbox modal`), where the
+  image is pulled and the fronted envs are reached over their Modal tunnels.
 
 ## Not covered yet
 
 - Python packages beyond the standard library (Pyodide fetches them from the network, which the workspace refuses).
 - Mounting an env's data as files: reads are commands, as writes are.
 - Waiting for the world: a shell-only agent waits with `sleep`.
-- Runs on remote sandbox providers have not been tried.
+- Remote sandbox providers other than Modal have not been tried.
 
 ## Development
 

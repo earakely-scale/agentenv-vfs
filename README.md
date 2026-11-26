@@ -129,8 +129,9 @@ PATH=.venv/bin:$PATH tests/integration/run.sh  # the server image against a plai
 
 ## Releasing
 
-Set `version` in `pyproject.toml`, push to `main`, then tag `v<version>` and push the tag: the `image` workflow
-publishes `ghcr.io/earakely-scale/agentenv-vfs:<version>`, which `wrap` of that version points bundles at.
+Set `version` in `pyproject.toml`, push to `main`, then tag `v<version>` and push the tag. The `image` workflow
+publishes `ghcr.io/earakely-scale/agentenv-vfs:<version>`, which `wrap` of that version points bundles at, and the
+`publish` workflow publishes the package to PyPI through trusted publishing (no token).
 
 ## License
 

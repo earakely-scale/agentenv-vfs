@@ -6,6 +6,11 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = ["agentenv-framework>=0.9.1637", "click>=8"]
+keywords = ["agent-env", "agentvfs", "mirage", "mcp", "agents"]
+
+[project.urls]
+Homepage = "https://github.com/earakely-scale/agentenv-vfs"
+Issues = "https://github.com/earakely-scale/agentenv-vfs/issues"
 
 [project.entry-points."agent_env.envs"]
 agentvfs = "agentenv_vfs.env:AgentVfsEnv"

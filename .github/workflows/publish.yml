@@ -1,0 +1,26 @@
+name: publish
+# The package on PyPI (pypi.org/project/agentenv-vfs) from a v<version> tag, through PyPI trusted publishing: PyPI
+# trusts this workflow in the `pypi` environment, so no token is stored anywhere.
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  pypi:
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: The tag is the package's version
+        run: test "${GITHUB_REF_NAME#v}" = "$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)"
+      - name: Unit tests
+        run: |
+          uv venv --python 3.12
+          uv pip install -e . 'agentenv-framework>=0.9.1637' pytest
+          .venv/bin/python -m pytest -q tests
+      - name: Build
+        run: uv build
+      - uses: pypa/gh-action-pypi-publish@release/v1

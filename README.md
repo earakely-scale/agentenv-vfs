@@ -38,7 +38,9 @@ agent-env run my-bundle-vfs
 `wrap` copies the bundle and, in each task, puts an `agentvfs` env in front of the agent's envs:
 
 - a `deploy_env` of `agentvfs` names the envs it fronts (`env_params.env`, one id or a list) and the agent's role, and
-  waits for those envs, for every tool lock on the role, and for whatever the agent's own deploy waits for;
+  waits for those envs, for the tool locks on the role that come before the agent's work, and for whatever the agent's
+  own deploy waits for (a lock applied later, such as a colleague frozen after the prompt, the env enforces as it
+  comes);
 - the agent's `env_ids` become `["agentvfs"]`, and its built-in tools go off (`builtin_tools: {"disable": "*"}`);
 - the agent's instructions gain one paragraph on working through commands (`--no-note` leaves them as they are).
 

@@ -142,9 +142,9 @@ def _wrap_agent(steps: list[dict], agent: Optional[str], several: bool, keep_bui
             raise WrapError(f"{len(found)} deploy_env steps deploy '{target}'")
         env_deploys.append(found[0])
     role = deploy.get("role")
-    # Its tool list is read as the agent's role once the role's tool locks are in, when the agent itself would deploy.
-    locks = [s["id"] for s in steps if s.get("type") == "modify_env_tool_access" and s.get("env_id") in env_ids
-             and s.get("role") in (role, "*")]
+    # Its tool list is read as the agent's role when the agent itself would deploy, once the role's tool locks that come
+    # before the agent's work are in. A lock applied later (a colleague frozen after the prompt) the env enforces.
+    locks = _locks_before_work(steps, deploy, [s for s in steps if _drives(s, agent)], env_ids, role)
     waits = list(dict.fromkeys([s["id"] for s in env_deploys] + locks + [_dep_id(d) for d in deploy.get("depends_on") or []]))
     front = {"id": f"{deploy['id']}-agentvfs", "type": "deploy_env", "version": None, "fail_task_on_error": True,
              "depends_on": [{"task_step_id": i} for i in waits],
@@ -185,6 +185,35 @@ def _drives(step: dict, agent: Optional[str]) -> bool:
     if step.get("type") == "prompt_agent":
         return step.get("agent_name") == agent
     return agent is not None and step.get("agent_name") == agent and "verifier" in str(step.get("type"))
+
+
+def _locks_before_work(steps: list[dict], deploy: dict, drivers: list[dict], env_ids: list[str],
+                       role: Optional[str]) -> list[str]:
+    """The tool locks on ``role`` in ``env_ids`` in place when the agent starts work: never one that waits for the
+    agent's deploy; one that waits for a prompt only if the agent's deploy or work waits for it."""
+    parents = {s["id"]: {_dep_id(d) for d in s.get("depends_on") or []} for s in steps}
+    children: dict[str, set] = {}
+    for sid, ps in parents.items():
+        for p in ps:
+            children.setdefault(p, set()).add(sid)
+    after_deploy = _reach(children, [deploy["id"]])
+    after_prompts = _reach(children, [s["id"] for s in steps if s.get("type") == "prompt_agent"])
+    before_work = _reach(parents, [deploy["id"], *(s["id"] for s in drivers)])
+    return [s["id"] for s in steps if s.get("type") == "modify_env_tool_access" and s.get("env_id") in env_ids
+            and s.get("role") in (role, "*") and s["id"] not in after_deploy
+            and (s["id"] in before_work or s["id"] not in after_prompts)]
+
+
+def _reach(edges: dict[str, set], start: list[str]) -> set[str]:
+    """The steps reachable from ``start`` along ``edges``, ``start`` left out."""
+    seen: set[str] = set()
+    todo = [e for s in start for e in edges.get(s, ())]
+    while todo:
+        step = todo.pop()
+        if step not in seen:
+            seen.add(step)
+            todo += edges.get(step, ())
+    return seen
 
 
 def _add_note(deploy: dict, drivers: list[dict]) -> Optional[str]:

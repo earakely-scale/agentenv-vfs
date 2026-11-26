@@ -190,12 +190,17 @@ def test_one_judge_keeps_the_plain_names():
 def test_colleague_and_solver():
     steps = judged_task()
     next(s for s in steps if s["id"] == "deploy-colleague")["system_prompt"] = "You are Alex."
+    # As in a task whose world waits for its colleagues: the prompt waits for the colleague's deploy, and the colleague
+    # is frozen after the prompt (a lock on its role that the colleague's env must not wait for).
+    next(s for s in steps if s["id"] == "prompt")["depends_on"].append({"task_step_id": "deploy-colleague"})
     changes = wrap_steps(steps, agents=["solver", "colleague"])
     by = {s["id"]: s for s in steps}
+    assert set(deps(by["deploy-colleague-agentvfs"])) == {"deploy-env", "reset", "colleague-lock"}
+    assert changes[1]["waits_for_locks"] == ["reset", "colleague-lock"]
     assert by["deploy-colleague"]["system_prompt"] == f"You are Alex.\n\n{NOTE}"
     assert changes[1]["note"] == "its deploy_agent system_prompt"
     # No step drives a colleague: its log is copied at the end of the run.
-    assert set(deps(by["deploy-colleague-agentvfs-calls"])) == {"deploy-colleague", "rubric-judge-b", "final"}
+    assert set(deps(by["deploy-colleague-agentvfs-calls"])) == {"rubric-judge-b", "final"}
     assert deps(by["deploy-solver-agentvfs-calls"]) == ["prompt"] and changes[0]["call_log"] == "agentvfs_calls_solver"
 
 

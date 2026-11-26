@@ -104,9 +104,14 @@ It works with any agent-env agent: agentvfs is an env, and the agent reaches it 
   command for the role named at deploy, so the agent sees them up front, as it would see MCP tools.
 - **Calls go to the env as the agent.** A command's call goes to the fronted env's MCP endpoint with the agent's
   `AgentEnv-Role`, which the agent sends with every call. So the env sees the calls an MCP agent of that role would
-  make: its tool locks, triggers and logs all apply, and each role gets its own workspace.
+  make: its tool locks, triggers and logs all apply, and each role gets its own workspace. A tool locked for the role
+  when its workspace opens is no command there; one locked later is refused by the env, as it would be over MCP (the
+  integration test checks both).
 - **What a run keeps.** The env logs every shell line and every tool call a line makes (role, tool, arguments,
-  outcome, timing), in order. `data/get` of `calls.jsonl` returns it, and the step `wrap` adds copies it into the run.
+  outcome, timing), in order, and what each role was shown: the commands its workspace has, and the length of the
+  `shell` description that lists them. `data/get` of `calls.jsonl` returns it, and the step `wrap` adds copies it into
+  the run, with a summary per role (`shown`: its commands, its description's length, and how many of its lines read
+  `/SKILL.md` or asked for `--help`).
 - **Where it runs.** The env is an MCP server env. Its image (Python, Node 24, Mirage's npm packages and Pyodide) is
   published at `ghcr.io/earakely-scale/agentenv-vfs`, tagged with the plugin's version, for linux/amd64 and
   linux/arm64. A wrapped bundle pulls it, and keeps its build context in `envs/agentvfs`, which a deploy builds only

@@ -42,6 +42,10 @@ async def main():
     first = [r for r in log["log"] if r["kind"] == "call"][0]
     assert first["role"] == "alice" and first["tool"] == "add_note" and first["line"] == 1 and first["ok"]
     assert log["failed_calls"] >= 1 and log["by_tool"]["list_notes"] >= 2
+    # What each role was shown: alice's commands in the shell description (her role named at data/add), bob's not.
+    print("shown:", json.dumps(log["shown"]))
+    assert log["shown"]["alice"]["commands"] == 3 and log["shown"]["alice"]["description_chars"] > 0
+    assert log["shown"]["alice"]["help_lines"] == 1 and log["shown"]["bob"]["description_chars"] is None
 
 
 asyncio.run(main())

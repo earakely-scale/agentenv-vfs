@@ -20,6 +20,12 @@ def run(input):
     data = b"".join(base64.b64decode(p["file"]["bytes"]) for p in reply["result"]["parts"] if p.get("kind") == "file")
     rows = [json.loads(line) for line in data.decode().splitlines() if line.strip()]
     calls = [r for r in rows if r["kind"] == "call"]
-    return {"lines": len(rows) - len(calls), "calls": len(calls), "failed_calls": sum(not r["ok"] for r in calls),
-            "by_tool": dict(collections.Counter(r["tool"] for r in calls).most_common()),
+    lines = [r for r in rows if r["kind"] == "line"]
+    # What each role was shown, and how often it looked its commands up in the workspace.
+    shown = {r["role"]: {"commands": r["commands"], "description_chars": r["description_chars"],
+                         "skill_md_lines": sum("/SKILL.md" in x["command"] for x in lines if x["role"] == r["role"]),
+                         "help_lines": sum("--help" in x["command"] for x in lines if x["role"] == r["role"])}
+             for r in rows if r["kind"] == "shown"}
+    return {"lines": len(lines), "calls": len(calls), "failed_calls": sum(not r["ok"] for r in calls),
+            "by_tool": dict(collections.Counter(r["tool"] for r in calls).most_common()), "shown": shown,
             "truncated": len(rows) > MAX_ROWS, "log": rows[:MAX_ROWS]}

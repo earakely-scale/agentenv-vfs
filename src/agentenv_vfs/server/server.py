@@ -9,7 +9,9 @@ that ran it, so the fronted env sees the same tool calls an MCP agent of that ro
 and refuses two envs that serve a tool of the same name. With a ``role``, that role's workspace opens now and the
 ``shell`` tool's description lists its commands; any other role's opens at its first call.
 
-Every shell line, and every tool call a line makes, is kept in order: ``data/get`` of ``calls.jsonl`` returns them.
+Every shell line, and every tool call a line makes, is kept in order: ``data/get`` of ``calls.jsonl`` returns them,
+after one ``shown`` row per role: the commands its workspace has and the length of the ``shell`` description that
+lists them (None where the description doesn't, for a role whose workspace opened at its first call).
 """
 from __future__ import annotations
 
@@ -139,11 +141,18 @@ class Fronts:
 
 
 class CallLog:
-    """Every shell line and every tool call a line made, in order: what a run keeps of the agent's tool use."""
+    """Every shell line and every tool call a line made, in order, and what each role was shown: what a run keeps
+    of the agent's tool use."""
 
     def __init__(self) -> None:
         self.rows: list[dict] = []
         self.current: dict[str, int] = {}  # each role's running line
+
+    def shown(self, role: str, tools: list[dict]) -> dict:
+        row = {"kind": "shown", "at": _now(), "role": role, "commands": len(tools), "tools": [t["name"] for t in tools],
+               "description_chars": None}
+        self.rows.append(row)
+        return row
 
     def line(self, role: str, command: str) -> dict:
         row = {"kind": "line", "line": sum(r["kind"] == "line" for r in self.rows) + 1, "at": _now(), "role": role,
@@ -228,6 +237,7 @@ class Workspace:
         self.run = RUNS / self.id
         self.process: asyncio.subprocess.Process | None = None
         self.client: httpx.AsyncClient | None = None
+        self.shown: dict = {}  # its row in the call log
         self.running = asyncio.Lock()  # the daemon runs a session's lines one at a time; so does this
 
     async def open(self) -> None:
@@ -356,6 +366,7 @@ class AgentVfs(AgentEnvEnvironment):
                     await workspace.close()
                     raise
                 self.workspaces[role] = workspace
+                workspace.shown = self.log.shown(role, workspace.tools)
             return self.workspaces[role]
 
     @reset_data
@@ -383,7 +394,9 @@ class AgentVfs(AgentEnvEnvironment):
                 break
         if role := config.get("role"):
             workspace = await self._workspace(role)
-            await self.update_tool("shell", description=f"{SHELL_DOC}\n\n{listing(workspace.tools)}")
+            description = f"{SHELL_DOC}\n\n{listing(workspace.tools)}"
+            await self.update_tool("shell", description=description)
+            workspace.shown["description_chars"] = len(description)
 
     @get_data
     async def _state(self, paths: list | None = None) -> list:
@@ -394,7 +407,7 @@ class AgentVfs(AgentEnvEnvironment):
         return [DataPart(data={"fronted": [{"name": e.name, "mcp_url": e.mcp_url} for e in self.fronts.envs]
                                if self.fronts else [],
                                "roles": {r: [t["name"] for t in w.tools] for r, w in self.workspaces.items()},
-                               "lines": len(self.log.rows) - len(calls), "calls": len(calls),
+                               "lines": sum(r["kind"] == "line" for r in self.log.rows), "calls": len(calls),
                                "failed_calls": sum(not r["ok"] for r in calls)})]
 
     @tool()

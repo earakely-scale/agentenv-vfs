@@ -204,6 +204,15 @@ def test_colleague_and_solver():
     assert deps(by["deploy-solver-agentvfs-calls"]) == ["prompt"] and changes[0]["call_log"] == "agentvfs_calls_solver"
 
 
+def test_two_colleagues_logs_both_at_the_end():
+    steps = judged_task()
+    steps.insert(3, {"id": "deploy-colleague-2", "type": "deploy_agent", "agent_name": "colleague-2", "env_ids": ["world"],
+                     "role": "sam@example.com", "depends_on": [{"task_step_id": "deploy-env"}]})
+    wrap_steps(steps, agents=["colleague", "colleague-2"])
+    by = {s["id"]: s for s in steps}
+    for name in ("deploy-colleague", "deploy-colleague-2"):  # each copied after the run's last steps, not first
+        assert set(deps(by[f"{name}-agentvfs-calls"])) >= {"rubric-judge-b", "final"}
+
 def test_wrap_bundle(tmp_path):
     src = tmp_path / "b"
     (src / "tasks").mkdir(parents=True)

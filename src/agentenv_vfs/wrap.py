@@ -171,6 +171,8 @@ def _wrap_agent(steps: list[dict], agent: Optional[str], several: bool, keep_bui
     if call_log:
         result_id = "agentvfs_calls" + (f"_{re.sub(r'[^A-Za-z0-9]', '_', agent or 'default')}" if several else "")
         after = drivers or [s for s in steps if s["id"] in _leaves(steps)]  # no step drives it: at the end of the run
+        if not after:
+            raise WrapError(f"no step for {who}'s call log to follow")
         steps.append({"id": f"{deploy['id']}-agentvfs-calls", "type": "run_code", "version": None,
                       "fail_task_on_error": False, "depends_on": [_dep(deploy, s["id"]) for s in after],
                       "script_artifact_id": CALLS_ARTIFACT, "script_artifact_version": None, "script_file": "calls.py",
@@ -237,9 +239,10 @@ def _add_note(deploy: dict, drivers: list[dict]) -> Optional[str]:
 
 
 def _leaves(steps: list[dict]) -> set[str]:
-    """The steps no other step depends on, call-log steps left out."""
-    needed = {_dep_id(d) for s in steps for d in s.get("depends_on") or []}
-    return {s["id"] for s in steps if s["id"] not in needed and not s["id"].endswith("-agentvfs-calls")}
+    """The steps no other step depends on, call-log steps (and what they depend on) left out."""
+    task = [s for s in steps if not s["id"].endswith("-agentvfs-calls")]
+    needed = {_dep_id(d) for s in task for d in s.get("depends_on") or []}
+    return {s["id"] for s in task if s["id"] not in needed}
 
 
 def _dep_id(dep) -> str | None:

@@ -19,10 +19,12 @@ tasks' other steps or agent-env itself.
 ## Install
 
 ```bash
-uv tool install --python 3.12 'agentenv-framework>=0.9.1637' \
-  --with 'agentenv-vfs @ git+https://github.com/earakely-scale/agentenv-vfs'
+uv tool install --python 3.12 agentenv-framework --with agentenv-vfs
 agent-env vfs --help
 ```
+
+Or `pip install agentenv-vfs` into an environment of your own, which brings agent-env with it. Pin a release with
+`agentenv-vfs==<version>`: `wrap` points bundles at the server image of the same version.
 
 You need Docker, as for any local agent-env run.
 

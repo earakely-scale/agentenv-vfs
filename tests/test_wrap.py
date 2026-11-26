@@ -109,11 +109,12 @@ def test_builtin_tools_follow_the_agent():
 
 
 def test_agents_that_take_builtin_tools():
-    """The table matches the installed framework: an agent takes builtin_tools when its sources handle them."""
+    """The table matches the installed framework: an agent takes builtin_tools when its sources handle them. An older
+    framework may lack an agent the table names, but every agent it has is in the table exactly when it takes them."""
     agents = Path(agent_env.__file__).parent / "agents" / "agents"
-    taking = {d.name for d in agents.iterdir() if d.is_dir()
-              and any("builtin_tools" in f.read_text(errors="ignore") for f in d.rglob("*.py"))}
-    assert taking == TAKES_BUILTIN_TOOLS
+    present = {d.name for d in agents.iterdir() if d.is_dir()}
+    taking = {d for d in present if any("builtin_tools" in f.read_text(errors="ignore") for f in (agents / d).rglob("*.py"))}
+    assert taking == TAKES_BUILTIN_TOOLS & present
 
 
 def test_options_and_refusals():

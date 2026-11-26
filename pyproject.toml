@@ -1,6 +1,6 @@
 [project]
 name = "agentenv-vfs"
-version = "0.4.1"
+version = "0.4.2"
 description = "agent-env plugin: any env's MCP tools as shell commands in a Mirage workspace (agentvfs)"
 readme = "README.md"
 license = "Apache-2.0"

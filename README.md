@@ -87,7 +87,7 @@ It works with any agent-env agent: agentvfs is an env, and the agent reaches it 
 
 | Agent | Built-in tools | Checked with |
 |---|---|---|
-| claude-code (the default), codex, opencode | turned off: the shell is the agent's only tool | the notes example; claude-code and codex on a gateway env's tasks too |
+| claude-code (the default), codex, opencode, antigravity (agent-env 0.9.1650+) | turned off: the shell is the agent's only tool | the notes example; claude-code and codex on a gateway env's tasks too |
 | gemini, hermes, letta-code, openhands, pi | kept: agent-env can't turn them off | the notes example; gemini on a gateway env's task too |
 | pydantic-ai | kept | not yet: its own coding tools include one named `shell`, which agent-env adds MCP tools beside without a prefix |
 

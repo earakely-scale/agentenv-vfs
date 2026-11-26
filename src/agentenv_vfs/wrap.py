@@ -22,9 +22,9 @@ from typing import Optional, Sequence
 
 ENV_NAME = "agentvfs"
 CALLS_ARTIFACT = "agentvfs-calls"
-# The agent-env agents whose agent-config takes builtin_tools (agentenv-framework 0.9.1637; tests/test_wrap.py checks it
-# against the installed framework): deploy_agent refuses builtin_tools for any other.
-TAKES_BUILTIN_TOOLS = frozenset({"claude-code", "codex", "opencode"})
+# The agent-env agents whose agent-config takes builtin_tools (antigravity since agentenv-framework 0.9.1650;
+# tests/test_wrap.py checks it against the installed framework): deploy_agent refuses builtin_tools for any other.
+TAKES_BUILTIN_TOOLS = frozenset({"antigravity", "claude-code", "codex", "opencode"})
 IMAGE = "ghcr.io/earakely-scale/agentenv-vfs"  # the published server image, tagged with the plugin's version
 
 
